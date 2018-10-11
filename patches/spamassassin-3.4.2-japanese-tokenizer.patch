@@ -1,0 +1,559 @@
+diff -uNr Mail-SpamAssassin-3.4.2.orig/MANIFEST Mail-SpamAssassin-3.4.2/MANIFEST
+--- Mail-SpamAssassin-3.4.2.orig/MANIFEST	2018-09-14 01:28:18.000000000 +0000
++++ Mail-SpamAssassin-3.4.2/MANIFEST	2018-09-20 06:05:00.197072067 +0000
+@@ -109,6 +109,9 @@
+ lib/Mail/SpamAssassin/Plugin/SpamCop.pm
+ lib/Mail/SpamAssassin/Plugin/Test.pm
+ lib/Mail/SpamAssassin/Plugin/TextCat.pm
++lib/Mail/SpamAssassin/Plugin/Tokenizer.pm
++lib/Mail/SpamAssassin/Plugin/Tokenizer/MeCab.pm
++lib/Mail/SpamAssassin/Plugin/Tokenizer/SimpleJA.pm
+ lib/Mail/SpamAssassin/Plugin/TxRep.pm
+ lib/Mail/SpamAssassin/Plugin/URIDNSBL.pm
+ lib/Mail/SpamAssassin/Plugin/URIDetail.pm
+diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Message/Node.pm Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Message/Node.pm
+--- Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Message/Node.pm	2018-09-14 01:27:51.000000000 +0000
++++ Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Message/Node.pm	2018-10-11 05:50:15.064063198 +0000
+@@ -50,6 +50,25 @@
+              $enc_w1252 = Encode::find_encoding('Windows-1252') };
+   eval { require Encode::Detect::Detector }
+     and do { $have_encode_detector = 1 };
++
++  # extra modules for Encode
++  eval { require Encode::HanExtra };
++  eval { require Encode::JIS2K };
++
++  # charset aliases.
++  eval { require Encode::Alias }
++    and do {
++      # workaround for old Unicode implementaion
++      Encode::Alias::define_alias( qr/^unicode-1-1-(.+)$/i => ' "$1"' );
++
++      # workaround for Japanese version of Microsoft Windows
++      Encode::Alias::define_alias( qr/^Shift_JIS$/i => ' "cp932"' );
++      eval { require Encode::EUCJPMS }
++        and do {
++          Encode::Alias::define_alias( qr/^iso-2022-jp$/i => ' "cp50221"' );
++          Encode::Alias::define_alias( qr/^euc-jp$/i => ' "cp51932"' );
++        };
++    };
+ };
+ 
+ =item new()
+@@ -459,7 +478,15 @@
+   my $data_taint = substr($_[0], 0, 0);  # empty string, tainted like $data
+ 
+   if (!defined $charset_declared || $charset_declared eq '') {
+-    $charset_declared = 'us-ascii';
++    if ($_[0] =~ /\e(?:\([BJ]|\$[\@B])/) {
++      # Usually ESC characters appear only in ISO-2022-JP.
++      # See also RFC 1468.
++      # workaround for old Japanese mailers.
++      $charset_declared = 'ISO-2022-JP';
++    }
++    else {
++      $charset_declared = 'us-ascii';
++    }
+   }
+ 
+   # number of characters with code above 127
+@@ -632,6 +659,10 @@
+   if (!defined $rv) {  # just in case - all decoding attempts failed so far
+     return $_[0];  # garbage-in / garbage-out, return unchanged octets
+   }
++
++  # Remove BOM.
++  $rv =~ s/^\N{U+FEFF}//;
++
+   # decoding octets to characters was successful
+   if (!$return_decoded) {
+     # utf8::encode() is much faster than $enc_utf8->encode on utf8-flagged arg
+@@ -641,6 +672,43 @@
+   return $rv;
+ }
+ 
++# Detect the language of a given text.
++# It's used for tokenizer of Bayes system.
++# It's an ad hoc implementation for CJK.
++#   Chinese: Han
++#   Japanese: Han, Hiragana and Katakana.
++#   Korean: Hangul and Han.
++sub _detect_language {
++  my $str = $_[0];  # $str must be UTF-8 encoding.
++
++  utf8::decode($str) unless utf8::is_utf8($str);
++
++  my $language_detected = 'en';
++  my %language;
++
++  if ($str =~ /\p{Han}/) {
++    $language{'zh'} = 1;
++    $language{'ja'} = 1;
++    $language{'ko'} = 1;
++  }
++  if ($str =~ /[\p{Hiragana}\p{Katakana}]/) {
++    $language{'ja'} = 1;
++  }
++  if ($str =~ /\p{Hangul}/) {
++    $language{'ko'} = 1;
++  }
++
++  foreach ('ja', 'ko', 'zh') {
++    if (defined $language{$_}) {
++      $language_detected = $_;
++      last;
++    }
++  }
++
++  dbg("message: detected language %s", $language_detected);
++  return $language_detected;
++}
++
+ =item rendered()
+ 
+ render_text() takes the given text/* type MIME part, and attempts to
+@@ -684,6 +752,7 @@
+         #
+         $character_semantics = 1;  # $text will be in characters
+         $text = _normalize($text, $self->{charset}, 1); # bytes to chars
++        $self->{language} = _detect_language($text);
+       } elsif (!defined $self->{charset} ||
+                $self->{charset} =~ /^(?:US-ASCII|UTF-8)\z/i) {
+         # With some luck input can be interpreted as UTF-8, do not warn.
+@@ -719,6 +788,14 @@
+       if ($self->{normalize} && $enc_utf8) {
+         # request transcoded result as UTF-8 octets!
+         $text = _normalize($text, $self->{charset}, 0);
++        $self->{language} = _detect_language($text);
++
++        # unfold hiragana, katakana and han
++        if ($self->{language} eq 'ja') {
++          utf8::decode($text);
++          $text =~ s/([\p{Han}\p{Hiragana}\p{Katakana}]+)\015?\012([\p{Han}\p{Hiragana}\p{Katakana}]+)/$1$2/og;
++          utf8::encode($text);
++        }
+       }
+       $self->{rendered_type} = $self->{type};
+       $self->{rendered} = $self->{'visible_rendered'} = $text;
+diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Message.pm Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Message.pm
+--- Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Message.pm	2018-09-14 01:27:51.000000000 +0000
++++ Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Message.pm	2018-10-11 03:16:28.476507518 +0000
+@@ -625,6 +625,7 @@
+   delete $self->{'pristine_headers'};
+   delete $self->{'line_ending'};
+   delete $self->{'missing_head_body_separator'};
++  delete $self->{'language'};
+ 
+   # Remove the queue variable, in case the body has not been parsed
+   delete $self->{'parse_queue'};
+@@ -654,6 +655,7 @@
+     delete $part->{'invisible_rendered'};
+     delete $part->{'type'};
+     delete $part->{'rendered_type'};
++    delete $part->{'language'};
+ 
+     # if there are children nodes, add them to the queue of nodes to clean up
+     if (exists $part->{'body_parts'}) {
+@@ -1147,6 +1149,9 @@
+   # whitespace handling (warning: small changes have large effects!)
+   $text =~ s/\n+\s*\n+/\f/gs;		# double newlines => form feed
+ # $text =~ tr/ \t\n\r\x0b\xa0/ /s;	# whitespace (incl. VT, NBSP) => space
++  if ($self->{normalize}) {
++    $text =~ s/\xe3\x80\x80/ /g;	# whitespace (ideographic space) => space
++  }
+   $text =~ tr/ \t\n\r\x0b/ /s;		# whitespace (incl. VT) => space
+   $text =~ tr/\f/\n/;			# form feeds => newline
+ 
+@@ -1238,6 +1243,27 @@
+ }
+ 
+ # ---------------------------------------------------------------------------
++
++sub get_language {
++  my ($self) = @_;
++
++  if (defined $self->{language}) { return $self->{language}; }
++  my @parts = $self->find_parts(qr/^(?:text|message)\b/i,1);
++  return '' unless @parts;
++
++  # Go through each part
++  my @languages;
++  for(my $pt = 0 ; $pt <= $#parts ; $pt++ ) {
++    my $p = $parts[$pt];
++    my $language = $p->{language};
++    next unless ($language);
++    push(@languages, $language) unless (grep(/^$language$/, @languages))
++  }
++  $self->{language} = scalar(@languages) ? join(' ', @languages) : '';
++  return $self->{language};
++}
++
++# ---------------------------------------------------------------------------
+ 
+ 1;
+ 
+diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Bayes.pm Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Bayes.pm
+--- Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Bayes.pm	2018-09-14 01:27:51.000000000 +0000
++++ Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Bayes.pm	2018-10-11 07:49:38.555227584 +0000
+@@ -148,7 +148,7 @@
+ # for results.  The winners are now the default settings.
+ use constant IGNORE_TITLE_CASE => 1;
+ use constant TOKENIZE_LONG_8BIT_SEQS_AS_TUPLES => 0;
+-use constant TOKENIZE_LONG_8BIT_SEQS_AS_UTF8_CHARS => 1;
++use constant TOKENIZE_LONG_8BIT_SEQS_AS_UTF8_CHARS => 0;
+ use constant TOKENIZE_LONG_TOKENS_AS_SKIPS => 1;
+ 
+ # tweaks by jm on May 12 2003, see -devel email at
+@@ -1043,9 +1043,28 @@
+     $pms->{msg}->get_mimepart_digests() if $t_src->{mimepart};
+   @{$msgdata->{bayes_token_uris}} =
+     $pms->get_uri_list() if $t_src->{uri};
++  if ($self->{conf}->{normalize_charset}) {
++    my $tokenizer = $self->get_tokenizer($pms);
++    if (ref($tokenizer)) {
++      $msgdata->{bayes_token_body} = $tokenizer->tokenize($msgdata->{bayes_token_body});
++      $msgdata->{bayes_token_inviz} = $tokenizer->tokenize($msgdata->{bayes_token_inviz});
++    }
++  }
+   return $msgdata;
+ }
+ 
++sub get_tokenizer {
++  my ($self, $msg) = @_;
++
++  my $tokenizer;
++  my @languages = split(/\s+/, $msg->{msg}->get_language());
++  foreach my $lang (@languages) {
++    $tokenizer = $self->{'conf'}->{'tokenizer'}->{$lang};
++    last if (ref($tokenizer));
++  }
++  return $tokenizer;
++}
++
+ ###########################################################################
+ 
+ # The calling functions expect a uniq'ed array of tokens ...
+@@ -1131,6 +1150,8 @@
+ 
+   my @rettokens;
+ 
++  dbg("bayes: _tokenize_line: line=%s", $_);
++
+   # include quotes, .'s and -'s for URIs, and [$,]'s for Nigerian-scam strings,
+   # and ISO-8859-15 alphas.  Do not split on @'s; better results keeping it.
+   # Some useful tokens: "$31,000,000" "www.clock-speed.net" "f*ck" "Hits!"
+@@ -1187,6 +1208,17 @@
+     next if $len < 3 ||
+ 	($token =~ /^(?:a(?:ble|l(?:ready|l)|n[dy]|re)|b(?:ecause|oth)|c(?:an|ome)|e(?:ach|mail|ven)|f(?:ew|irst|or|rom)|give|h(?:a(?:ve|s)|ttp)|i(?:n(?:formation|to)|t\'s)|just|know|l(?:ike|o(?:ng|ok))|m(?:a(?:de|il(?:(?:ing|to))?|ke|ny)|o(?:re|st)|uch)|n(?:eed|o[tw]|umber)|o(?:ff|n(?:ly|e)|ut|wn)|p(?:eople|lace)|right|s(?:ame|ee|uch)|t(?:h(?:at|is|rough|e)|ime)|using|w(?:eb|h(?:ere|y)|ith(?:out)?|or(?:ld|k))|y(?:ears?|ou(?:(?:\'re|r))?))$/i);
+ 
++    # Skip short UTF-8 tokens.
++    # - one UTF-8 char
++    # - two chars of Hiragana and Katakana.
++    if ($self->{conf}->{normalize_charset}) {
++      next if ($token =~ /^(?: [\x00-\x7F]               |
++                               [\xC0-\xDF][\x80-\xBF]    |
++                               [\xE0-\xEF][\x80-\xBF]{2} |
++                               [\xF0-\xF4][\x80-\xBF]{3} |
++                               (?:\xE3[\x81-\x83][\x80-\xBF]){2} )$/x);
++    }
++
+     # are we in the body?  If so, apply some body-specific breakouts
+     if ($region == 1 || $region == 2) {
+       if (CHEW_BODY_MAILADDRS && $token =~ /\S\@\S/i) {
+@@ -1249,7 +1281,10 @@
+ 
+     # decompose tokens?  do this after shortening long tokens
+     if ($region == 1 || $region == 2) {
+-      if (DECOMPOSE_BODY_TOKENS) {
++      if (DECOMPOSE_BODY_TOKENS
++            && $token !~ / [\xC0-\xDF][\x80-\xBF]    |
++                           [\xE0-\xEF][\x80-\xBF]{2} |
++                           [\xF0-\xF4][\x80-\xBF]{3} /x) {
+         if ($token =~ /[^\w:\*]/) {
+           my $decompd = $token;                        # "Foo!"
+           $decompd =~ s/[^\w:\*]//gs;
+@@ -1271,6 +1306,8 @@
+     push (@rettokens, $tokprefix.$token);
+   }
+ 
++  dbg("bayes: _tokenize_line: tokens=%s", join(',', @rettokens));
++
+   return @rettokens;
+ }
+ 
+diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer/MeCab.pm Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Tokenizer/MeCab.pm
+--- Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer/MeCab.pm	1970-01-01 00:00:00.000000000 +0000
++++ Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Tokenizer/MeCab.pm	2018-10-10 10:03:57.201608570 +0000
+@@ -0,0 +1,76 @@
++# <@LICENSE>
++# Licensed to the Apache Software Foundation (ASF) under one or more
++# contributor license agreements.  See the NOTICE file distributed with
++# this work for additional information regarding copyright ownership.
++# The ASF licenses this file to you under the Apache License, Version 2.0
++# (the "License"); you may not use this file except in compliance with
++# the License.  You may obtain a copy of the License at:
++# 
++#     http://www.apache.org/licenses/LICENSE-2.0
++# 
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++# </@LICENSE>
++
++=head1 NAME
++
++Tokenizer::MeCab - Japanese tokenizer with MeCab
++
++=head1 SYNOPSIS
++
++loadplugin     Mail::SpamAssassin::Plugin::Tokenizer::MeCab
++
++=head1 DESCRIPTION
++
++This plugin tokenizes Japanese strings with MeCab which is 
++the morphological analysis engine. 
++
++MeCab perl module 0.996 or higher is required.
++
++=cut
++
++package Mail::SpamAssassin::Plugin::Tokenizer::MeCab;
++
++use strict;
++use warnings;
++use Mail::SpamAssassin::Plugin::Tokenizer;
++
++use vars qw(@ISA);
++@ISA = qw(Mail::SpamAssassin::Plugin::Tokenizer);
++
++# Have to do this so that RPM doesn't find these as required perl modules
++BEGIN { require MeCab; }
++our $language = 'ja';
++our $mecab = new MeCab::Tagger(-Owakati);
++
++sub new {
++  my $class = shift;
++  my $mailsaobject = shift;
++
++  $class = ref($class) || $class;
++  my $self = $class->SUPER::new($mailsaobject, $language);
++  bless ($self, $class);
++
++  return $self;
++}
++
++sub tokenize {
++  my ($self, $text_array) = @_;
++
++  my @tokenized_array;
++  foreach my $text (@$text_array) {
++    next unless ($text);
++    utf8::encode($text) if utf8::is_utf8($text);
++    if ($text =~ /[\xE0-\xEF][\x80-\xBF]{2}|[\xF0-\xF4][\x80-\xBF]{3}/) {
++        # $text = $mecab->parse($text); This does not work correctly. It's a workaround.
++        $text =~ s/(.+)/$mecab->parse($1)/egs;
++    }
++    push(@tokenized_array, $text);
++  }
++  return \@tokenized_array;
++}
++
++1;
+diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer/SimpleJA.pm Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Tokenizer/SimpleJA.pm
+--- Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer/SimpleJA.pm	1970-01-01 00:00:00.000000000 +0000
++++ Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Tokenizer/SimpleJA.pm	2018-10-10 10:24:53.738408616 +0000
+@@ -0,0 +1,73 @@
++# <@LICENSE>
++# Licensed to the Apache Software Foundation (ASF) under one or more
++# contributor license agreements.  See the NOTICE file distributed with
++# this work for additional information regarding copyright ownership.
++# The ASF licenses this file to you under the Apache License, Version 2.0
++# (the "License"); you may not use this file except in compliance with
++# the License.  You may obtain a copy of the License at:
++# 
++#     http://www.apache.org/licenses/LICENSE-2.0
++# 
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++# </@LICENSE>
++
++=head1 NAME
++
++Tokenizer::SimpleJA - simple Japanese tokenizer
++
++=head1 SYNOPSIS
++
++loadplugin     Mail::SpamAssassin::Plugin::Tokenizer::SimpleJA
++
++=head1 DESCRIPTION
++
++This plugin simply tokenizes Japanese strings by scripts.
++
++=cut
++
++package Mail::SpamAssassin::Plugin::Tokenizer::SimpleJA;
++
++use strict;
++use warnings;
++use Mail::SpamAssassin::Plugin::Tokenizer;
++
++use vars qw(@ISA);
++@ISA = qw(Mail::SpamAssassin::Plugin::Tokenizer);
++
++our $language = 'ja';
++
++sub new {
++  my $class = shift;
++  my $mailsaobject = shift;
++
++  $class = ref($class) || $class;
++  my $self = $class->SUPER::new($mailsaobject, $language);
++  bless ($self, $class);
++
++  return $self;
++}
++
++sub tokenize {
++  my ($self, $text_array) = @_;
++
++  my @tokenized_array;
++  foreach my $text (@$text_array) {
++    next unless ($text);
++    utf8::decode($text) unless utf8::is_utf8($text);
++    if ($text =~ /[\p{Han}\p{Hiragana}\p{Katakana}]/) {
++      # Note: Perl's Katakana block does not have KATAKANA-HIRAGANA PROLONGED SOUND MARK (U+30FC).
++      # Katakana: U+30A0 - U+30FF
++      # Hiragana: U+3041 - U+309F
++      $text =~ s/([\N{U+30A0}-\N{U+30FF}]+|[\N{U+3041}-\N{U+309F}\N{U+30FC}]+|\p{Han}+|[^\N{U+3041}-\N{U+30FF}\p{Han}]+)/$1 /g;
++    }
++    utf8::encode($text);
++    push(@tokenized_array, $text);
++  }
++  return \@tokenized_array;
++}
++
++1;
+diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer.pm Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Tokenizer.pm
+--- Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer.pm	1970-01-01 00:00:00.000000000 +0000
++++ Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Tokenizer.pm	2018-10-10 09:59:59.187521032 +0000
+@@ -0,0 +1,115 @@
++# <@LICENSE>
++# Licensed to the Apache Software Foundation (ASF) under one or more
++# contributor license agreements.  See the NOTICE file distributed with
++# this work for additional information regarding copyright ownership.
++# The ASF licenses this file to you under the Apache License, Version 2.0
++# (the "License"); you may not use this file except in compliance with
++# the License.  You may obtain a copy of the License at:
++# 
++#     http://www.apache.org/licenses/LICENSE-2.0
++# 
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++# </@LICENSE>
++
++=head1 NAME
++
++Mail::SpamAssassin::Plugin::Tokenizer - Tokenizer plugin base class
++
++=head1 SYNOPSIS
++
++=head2 SpamAssassin configuration:
++
++  loadplugin MyTokenizerPlugin /path/to/MyTokenizerPlugin.pm
++
++=head2 Perl code:
++
++  use Mail::SpamAssassin::Plugin::Tokenizer;
++  use vars qw(@ISA);
++  @ISA = qw(Mail::SpamAssassin::Plugin::Tokenizer);
++  # language to use this plugin
++  our $language = 'ja';
++
++  # constructor: register language
++  sub new {
++    my $class = shift;
++    my $mailsaobject = shift;
++
++    # some boilerplate...
++    $class = ref($class) || $class;
++    my $self = $class->SUPER::new($mailsaobject, $language);
++    bless ($self, $class);
++
++    return $self;
++  }
++
++  # tokenize function
++  sub tokenize {
++    my $self = shift;
++    my $text_array_ref = shift;
++
++    ......
++
++    return $tokenized_array_ref;
++  }
++
++
++=head1 DESCRIPTION
++
++This plugin is the base class of tokenizer plugins.
++You must define tokenize() and $language
++
++=head1 INTERFACE
++
++  sub tokenize {
++    my $self = shift;
++    my $text_array_ref = shift;
++
++    ......
++ 
++    return $tokenized_array_ref;
++  }
++
++=cut
++
++package Mail::SpamAssassin::Plugin::Tokenizer;
++
++use Mail::SpamAssassin::Plugin;
++use Mail::SpamAssassin::Logger;
++use strict;
++use warnings;
++use bytes;
++
++use vars qw(@ISA);
++@ISA = qw(Mail::SpamAssassin::Plugin);
++
++sub new {
++  my $class = shift;
++  my $mailsaobject = shift;
++  my $language = shift;
++
++  # some boilerplate...
++  $class = ref($class) || $class;
++  my $self = $class->SUPER::new($mailsaobject);
++  bless ($self, $class);
++
++  if ($language) {
++    $self->{main}->{conf}->{tokenizer}->{$language} = $self;
++  }
++  else {
++    dbg("plugin: $self: \$language is not defined");
++  }
++
++  return $self;
++}
++
++sub tokenize {
++  my ($self, $ref) = @_;
++
++  return $ref;
++}
++
++1;
