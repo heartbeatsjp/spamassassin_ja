@@ -37,7 +37,7 @@ SpamAssassinのベイズフィルターにおいて、日本語の文章の分�
 
 ## LICENSE
 
-- [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0)
+- [Apache License, Version 2.0](LICENSE)
 
 ## AUTHOR
 
