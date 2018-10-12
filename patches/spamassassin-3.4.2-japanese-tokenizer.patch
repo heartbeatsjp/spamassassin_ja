@@ -283,8 +283,8 @@ diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Bayes.pm Mai
  
 diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer/MeCab.pm Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Tokenizer/MeCab.pm
 --- Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer/MeCab.pm	1970-01-01 00:00:00.000000000 +0000
-+++ Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Tokenizer/MeCab.pm	2018-10-10 10:03:57.201608570 +0000
-@@ -0,0 +1,76 @@
++++ Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Tokenizer/MeCab.pm	2018-10-12 07:02:18.728466317 +0000
+@@ -0,0 +1,87 @@
 +# <@LICENSE>
 +# Licensed to the Apache Software Foundation (ASF) under one or more
 +# contributor license agreements.  See the NOTICE file distributed with
@@ -331,7 +331,7 @@ diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer/Me
 +# Have to do this so that RPM doesn't find these as required perl modules
 +BEGIN { require MeCab; }
 +our $language = 'ja';
-+our $mecab = new MeCab::Tagger(-Owakati);
++our $mecab = new MeCab::Tagger(-Ochasen);
 +
 +sub new {
 +  my $class = shift;
@@ -351,13 +351,24 @@ diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer/Me
 +  foreach my $text (@$text_array) {
 +    next unless ($text);
 +    utf8::encode($text) if utf8::is_utf8($text);
-+    if ($text =~ /[\xE0-\xEF][\x80-\xBF]{2}|[\xF0-\xF4][\x80-\xBF]{3}/) {
-+        # $text = $mecab->parse($text); This does not work correctly. It's a workaround.
-+        $text =~ s/(.+)/$mecab->parse($1)/egs;
-+    }
++    $text =~ s/((?:[\xE0-\xEF][\x80-\xBF]{2}|[\xF0-\xF4][\x80-\xBF]{3})+)/&_tokenize($1)/eg;
++    $text =~ s/ +/ /g;
++    $text =~ s/^ //;
++    $text =~ s/ $//;
 +    push(@tokenized_array, $text);
 +  }
 +  return \@tokenized_array;
++}
++
++sub _tokenize {
++  my $text = shift;
++
++  my @tokens = (' ');
++  for (my $node = $mecab->parseToNode($text); $node->{next}; $node = $node->{next}) {
++    push(@tokens, $node->{surface});
++  }
++  push(@tokens, ' ');
++  return join(' ', @tokens);
 +}
 +
 +1;
