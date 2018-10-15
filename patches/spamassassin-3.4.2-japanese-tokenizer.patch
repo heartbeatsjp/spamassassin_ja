@@ -194,7 +194,7 @@ diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Message.pm Mail-Spa
  
 diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Bayes.pm Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Bayes.pm
 --- Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Bayes.pm	2018-09-14 01:27:51.000000000 +0000
-+++ Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Bayes.pm	2018-10-11 07:49:38.555227584 +0000
++++ Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Bayes.pm	2018-10-15 02:07:52.615698652 +0000
 @@ -148,7 +148,7 @@
  # for results.  The winners are now the default settings.
  use constant IGNORE_TITLE_CASE => 1;
@@ -242,25 +242,7 @@ diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Bayes.pm Mai
    # include quotes, .'s and -'s for URIs, and [$,]'s for Nigerian-scam strings,
    # and ISO-8859-15 alphas.  Do not split on @'s; better results keeping it.
    # Some useful tokens: "$31,000,000" "www.clock-speed.net" "f*ck" "Hits!"
-@@ -1187,6 +1208,17 @@
-     next if $len < 3 ||
- 	($token =~ /^(?:a(?:ble|l(?:ready|l)|n[dy]|re)|b(?:ecause|oth)|c(?:an|ome)|e(?:ach|mail|ven)|f(?:ew|irst|or|rom)|give|h(?:a(?:ve|s)|ttp)|i(?:n(?:formation|to)|t\'s)|just|know|l(?:ike|o(?:ng|ok))|m(?:a(?:de|il(?:(?:ing|to))?|ke|ny)|o(?:re|st)|uch)|n(?:eed|o[tw]|umber)|o(?:ff|n(?:ly|e)|ut|wn)|p(?:eople|lace)|right|s(?:ame|ee|uch)|t(?:h(?:at|is|rough|e)|ime)|using|w(?:eb|h(?:ere|y)|ith(?:out)?|or(?:ld|k))|y(?:ears?|ou(?:(?:\'re|r))?))$/i);
- 
-+    # Skip short UTF-8 tokens.
-+    # - one UTF-8 char
-+    # - two chars of Hiragana and Katakana.
-+    if ($self->{conf}->{normalize_charset}) {
-+      next if ($token =~ /^(?: [\x00-\x7F]               |
-+                               [\xC0-\xDF][\x80-\xBF]    |
-+                               [\xE0-\xEF][\x80-\xBF]{2} |
-+                               [\xF0-\xF4][\x80-\xBF]{3} |
-+                               (?:\xE3[\x81-\x83][\x80-\xBF]){2} )$/x);
-+    }
-+
-     # are we in the body?  If so, apply some body-specific breakouts
-     if ($region == 1 || $region == 2) {
-       if (CHEW_BODY_MAILADDRS && $token =~ /\S\@\S/i) {
-@@ -1249,7 +1281,10 @@
+@@ -1249,7 +1270,10 @@
  
      # decompose tokens?  do this after shortening long tokens
      if ($region == 1 || $region == 2) {
@@ -272,7 +254,7 @@ diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Bayes.pm Mai
          if ($token =~ /[^\w:\*]/) {
            my $decompd = $token;                        # "Foo!"
            $decompd =~ s/[^\w:\*]//gs;
-@@ -1271,6 +1306,8 @@
+@@ -1271,6 +1295,8 @@
      push (@rettokens, $tokprefix.$token);
    }
  
@@ -283,8 +265,8 @@ diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Bayes.pm Mai
  
 diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer/MeCab.pm Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Tokenizer/MeCab.pm
 --- Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer/MeCab.pm	1970-01-01 00:00:00.000000000 +0000
-+++ Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Tokenizer/MeCab.pm	2018-10-12 07:02:18.728466317 +0000
-@@ -0,0 +1,87 @@
++++ Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Tokenizer/MeCab.pm	2018-10-15 06:21:12.062500497 +0000
+@@ -0,0 +1,126 @@
 +# <@LICENSE>
 +# Licensed to the Apache Software Foundation (ASF) under one or more
 +# contributor license agreements.  See the NOTICE file distributed with
@@ -360,11 +342,50 @@ diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer/Me
 +  return \@tokenized_array;
 +}
 +
++# stop words
++# Source: mecab-ipadic-2.7.0-20070801: pos-id.def
++# その他,間投,*,* 0
++# フィラー,*,*,* 1
++# 記号,括弧開,*,* 5
++# 記号,括弧閉,*,* 6
++# 記号,句点,*,* 7
++# 記号,空白,*,* 8
++# 記号,読点,*,* 9
++# 助詞,格助詞,一般,* 13
++# 助詞,格助詞,引用,* 14
++# 助詞,格助詞,連語,* 15
++# 助詞,係助詞,*,* 16
++# 助詞,終助詞,*,* 17
++# 助詞,接続助詞,*,* 18
++# 助詞,特殊,*,* 19
++# 助詞,副詞化,*,* 20
++# 助詞,副助詞,*,* 21
++# 助詞,副助詞／並立助詞／終助詞,*,* 22
++# 助詞,並立助詞,*,* 23
++# 助詞,連体化,*,* 24
++# 助動詞,*,*,* 25
++# 接続詞,*,*,* 26
++# 名詞,代名詞,一般,* 59
++# 名詞,非自立,一般,* 63
++# 名詞,非自立,形容動詞語幹,* 64
++# 名詞,非自立,助動詞語幹,* 65
++# 名詞,非自立,副詞可能,* 66
++our @stop_words_id_list = (
++    0, 1, 5, 6, 7, 8, 9,
++    13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 
++    25, 26, 59, 63, 64, 65, 66);
++
 +sub _tokenize {
 +  my $text = shift;
 +
 +  my @tokens = (' ');
 +  for (my $node = $mecab->parseToNode($text); $node->{next}; $node = $node->{next}) {
++    # Skip if stop words.
++    next if (grep {$_ eq $node->{posid}} @stop_words_id_list);
++
++    # Skip if one Hiragana or Katakana.
++    next if ($node->{surface} =~ /^\xE3[\x81-\x83][\x80-\xBF]$/);
++
 +    push(@tokens, $node->{surface});
 +  }
 +  push(@tokens, ' ');
@@ -374,8 +395,8 @@ diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer/Me
 +1;
 diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer/SimpleJA.pm Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Tokenizer/SimpleJA.pm
 --- Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer/SimpleJA.pm	1970-01-01 00:00:00.000000000 +0000
-+++ Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Tokenizer/SimpleJA.pm	2018-10-10 10:24:53.738408616 +0000
-@@ -0,0 +1,73 @@
++++ Mail-SpamAssassin-3.4.2/lib/Mail/SpamAssassin/Plugin/Tokenizer/SimpleJA.pm	2018-10-15 06:02:45.603897883 +0000
+@@ -0,0 +1,101 @@
 +# <@LICENSE>
 +# Licensed to the Apache Software Foundation (ASF) under one or more
 +# contributor license agreements.  See the NOTICE file distributed with
@@ -435,17 +456,45 @@ diff -uNr Mail-SpamAssassin-3.4.2.orig/lib/Mail/SpamAssassin/Plugin/Tokenizer/Si
 +  my @tokenized_array;
 +  foreach my $text (@$text_array) {
 +    next unless ($text);
-+    utf8::decode($text) unless utf8::is_utf8($text);
-+    if ($text =~ /[\p{Han}\p{Hiragana}\p{Katakana}]/) {
-+      # Note: Perl's Katakana block does not have KATAKANA-HIRAGANA PROLONGED SOUND MARK (U+30FC).
-+      # Katakana: U+30A0 - U+30FF
-+      # Hiragana: U+3041 - U+309F
-+      $text =~ s/([\N{U+30A0}-\N{U+30FF}]+|[\N{U+3041}-\N{U+309F}\N{U+30FC}]+|\p{Han}+|[^\N{U+3041}-\N{U+30FF}\p{Han}]+)/$1 /g;
-+    }
-+    utf8::encode($text);
++    utf8::encode($text) if utf8::is_utf8($text);
++    $text =~ s/((?:[\xE0-\xEF][\x80-\xBF]{2}|[\xF0-\xF4][\x80-\xBF]{3})+)/&_tokenize($1)/eg;
++    $text =~ s/ +/ /g;
++    $text =~ s/^ //;
++    $text =~ s/ $//;
 +    push(@tokenized_array, $text);
 +  }
 +  return \@tokenized_array;
++}
++
++sub _tokenize {
++  my $text = shift;
++
++  utf8::decode($text) unless utf8::is_utf8($text);
++
++  # Note: Perl's Katakana block does not have KATAKANA-HIRAGANA PROLONGED SOUND MARK (U+30FC).
++  # Katakana: U+30A0 - U+30FF
++  # Hiragana: U+3041 - U+309F
++  $text =~ s/([\N{U+30A0}-\N{U+30FF}]+           |  # Katakana
++              [\N{U+3041}-\N{U+309F}\N{U+30FC}]+ |  # Hiragana
++              \p{Han}+                           |  # Han
++              \p{gc=P}+                             # General_Category: Punctuation
++             )/ $1 /gx;
++
++  # Skip Punctuation and Other.
++  # See also: http://www.unicode.org/reports/tr44/#General_Category_Values
++  $text =~ s/[\p{gc=P}\p{gc=C}]/ /g;
++
++  # Skip Hiragana or Katakana less than two letters.
++  $text =~ s/\b[\N{U+3041}-\N{U+30FF}]{1,2}\b//g;
++
++  # Skip Variation Selector and Specials.
++  #  FE00 -  FE0F: Variation Selectors
++  #  FFF0 -  FFFF: Specials
++  # E0100 - E01EF: Variation Selectors Supplement
++  $text =~ s/[\N{U+FE00}-\N{U+FE0F}\N{U+FFF0}-\N{U+FFFF}\N{U+E0100}-\N{U+E01FE}]//g;
++
++  utf8::encode($text);
++  return $text;
 +}
 +
 +1;
